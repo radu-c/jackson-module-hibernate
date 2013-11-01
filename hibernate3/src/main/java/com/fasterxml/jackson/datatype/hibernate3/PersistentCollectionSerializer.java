@@ -7,7 +7,6 @@ import javax.persistence.*;
 import org.hibernate.collection.PersistentCollection;
 
 import com.fasterxml.jackson.core.*;
-
 import com.fasterxml.jackson.databind.*;
 import com.fasterxml.jackson.databind.jsontype.TypeSerializer;
 import com.fasterxml.jackson.databind.ser.*;
@@ -51,15 +50,23 @@ public class PersistentCollectionSerializer
      * must know type of property being serialized.
      * If not known
      */
-    public JsonSerializer<Object> createContextual(SerializerProvider provider,
+    @Override
+    public JsonSerializer<?> createContextual(SerializerProvider provider,
             BeanProperty property)
         throws JsonMappingException
     {
+        /* 18-Oct-2013, tatu: Whether this is for the primary property or secondary is
+         *   not quite certain; presume primary one for now.
+         */
+        JsonSerializer<?> ser = provider.handlePrimaryContextualization(_serializer, property);
+        
         // If we use eager loading, or force it, can just return underlying serializer as is
         if (_forceLazyLoading || !usesLazyLoading(property)) {
-            return _serializer;
+            return ser;
         }
-        // Otherwise this instance is to be used
+        if (ser != _serializer) {
+            return new PersistentCollectionSerializer(_forceLazyLoading, ser);
+        }
         return this;
     }
     
@@ -91,7 +98,8 @@ public class PersistentCollectionSerializer
         }
         _serializer.serialize(value, jgen, provider);
     }
-    
+
+    @Override
     public void serializeWithType(Object value, JsonGenerator jgen, SerializerProvider provider,
             TypeSerializer typeSer)
         throws IOException, JsonProcessingException
@@ -127,6 +135,11 @@ public class PersistentCollectionSerializer
     protected boolean usesLazyLoading(BeanProperty property)
     {
         if (property != null) {
+            // As per [Issue#36]
+            ElementCollection ec = property.getAnnotation(ElementCollection.class);
+            if (ec != null) {
+                return (ec.fetch() == FetchType.LAZY);
+            }
             OneToMany ann1 = property.getAnnotation(OneToMany.class);
             if (ann1 != null) {
                 return (ann1.fetch() == FetchType.LAZY);

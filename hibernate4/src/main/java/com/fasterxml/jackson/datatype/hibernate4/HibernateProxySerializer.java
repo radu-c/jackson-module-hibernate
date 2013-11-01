@@ -3,6 +3,8 @@ package com.fasterxml.jackson.datatype.hibernate4;
 import java.io.IOException;
 import java.util.HashMap;
 
+import org.hibernate.engine.spi.Mapping;
+import org.hibernate.engine.spi.SessionImplementor;
 import org.hibernate.proxy.HibernateProxy;
 import org.hibernate.proxy.LazyInitializer;
 
@@ -31,6 +33,7 @@ public class HibernateProxySerializer
 
     protected final boolean _forceLazyLoading;
     protected final boolean _serializeIdentifier;
+    protected final Mapping _mapping;
 
     /**
      * For efficient serializer lookup, let's use this; most
@@ -46,14 +49,19 @@ public class HibernateProxySerializer
 
     public HibernateProxySerializer(boolean forceLazyLoading)
     {
-        this(forceLazyLoading, false);
+        this(forceLazyLoading, false, null);
     }
 
     public HibernateProxySerializer(boolean forceLazyLoading, boolean serializeIdentifier) {
-    	_forceLazyLoading = forceLazyLoading;
-    	_serializeIdentifier = serializeIdentifier;
-    	_dynamicSerializers = PropertySerializerMap.emptyMap();
-    	_property = null;
+        this(forceLazyLoading, serializeIdentifier, null);
+    }
+
+    public HibernateProxySerializer(boolean forceLazyLoading, boolean serializeIdentifier, Mapping mapping) {
+        _forceLazyLoading = forceLazyLoading;
+        _serializeIdentifier = serializeIdentifier;
+        _mapping = mapping;
+        _dynamicSerializers = PropertySerializerMap.emptyMap();
+        _property = null;
     }
     
     /*
@@ -62,7 +70,7 @@ public class HibernateProxySerializer
     /**********************************************************************
      */
 
-	@Override
+    @Override
     public void serialize(HibernateProxy value, JsonGenerator jgen, SerializerProvider provider)
         throws IOException, JsonProcessingException
     {
@@ -75,6 +83,7 @@ public class HibernateProxySerializer
         findSerializer(provider, proxiedValue).serialize(proxiedValue, jgen, provider);
     }
 
+    @Override
     public void serializeWithType(HibernateProxy value, JsonGenerator jgen, SerializerProvider provider,
             TypeSerializer typeSer)
         throws IOException, JsonProcessingException
@@ -109,15 +118,18 @@ public class HibernateProxySerializer
          * this avoids potentially costly lookup from global caches and/or construction
          * of new serializers
          */
-        PropertySerializerMap.SerializerAndMapResult result = _dynamicSerializers.findAndAddSerializer(type,
-                provider, _property);
+        /* 18-Oct-2013, tatu: Whether this is for the primary property or secondary is
+         *   really anyone's guess at this point; proxies can exist at any level?
+         */
+        PropertySerializerMap.SerializerAndMapResult result =
+                _dynamicSerializers.findAndAddPrimarySerializer(type, provider, _property);
         if (_dynamicSerializers != result.map) {
             _dynamicSerializers = result.map;
         }
         return result.serializer;
     }
-   
-    
+
+
     /**
      * Helper method for finding value being proxied, if it is available
      * or if it is to be forced to be loaded.
@@ -128,7 +140,17 @@ public class HibernateProxySerializer
         LazyInitializer init = proxy.getHibernateLazyInitializer();
         if (!_forceLazyLoading && init.isUninitialized()) {
         	if(_serializeIdentifier){
-        		final String idName = init.getSession().getFactory().getIdentifierPropertyName(init.getEntityName());
+                final String idName;
+                if (_mapping != null) {
+                    idName = _mapping.getIdentifierPropertyName(init.getEntityName());
+                } else {
+                    final SessionImplementor session = init.getSession();
+                    if (session != null) {
+                        idName = session.getFactory().getIdentifierPropertyName(init.getEntityName());
+                    } else {
+                        idName = init.getEntityName();
+                    }
+                }
         		final Object idValue = init.getIdentifier();
         		return new HashMap<String, Object>(){{ put(idName, idValue); }};
         	} else {
